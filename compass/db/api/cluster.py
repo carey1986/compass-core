@@ -179,6 +179,21 @@ def get_cluster(
         session, models.Cluster, exception_when_missing, id=cluster_id
     )
 
+@database.run_in_session()
+@user_api.check_user_permission_in_session(
+    permission.PERMISSION_LIST_CLUSTERS)
+def is_cluster_os_ready(
+    cluster_id, exception_when_missing=True,
+    user=None, session=None, **kwargs
+):
+    cluster = utils.get_db_object(
+        session, models.Cluster, exception_when_missing, id=cluster_id)
+   
+    all_states = ([i.host.state.ready for i in cluster.clusterhosts]) 
+
+    logging.info("is_cluster_os_ready: all_states %s" % all_states)
+
+    return all(all_states)
 
 def _conditional_exception(cluster, exception_when_not_editable):
     if exception_when_not_editable:
@@ -398,13 +413,10 @@ def get_cluster_metadata(cluster_id, user=None, session=None, **kwargs):
         metadatas['os_config'] = metadata_api.get_os_metadata_internal(
             session, os.id
         )
-    adapter = cluster.adapter
-    if adapter:
-        metadatas['package_config'] = (
-            metadata_api.get_package_metadata_internal(
-                session, adapter.id
-            )
-        )
+
+    metadatas['package_config'] = metadata_api.get_flavor_metadata_internal(
+        session, cluster.flavor_id   
+    )
     return metadatas
 
 
