@@ -507,7 +507,7 @@ def _add_cluster(client, adapter_id, os_id, flavor_id, machines):
         msg = 'failed to add cluster %s with adapter %s os %s flavor %s' % (
             cluster_name, adapter_id, os_id, flavor_id)
         raise Exception(msg)
-    logging.info('add cluster %s status: %s resp:%s', 
+    logging.info('add cluster %s status: %s resp:%s',
                  cluster_name, status,resp)
     #if cluster exsist
     if status >= 400 and resp['message'].find("exist")>0:
@@ -827,7 +827,7 @@ def _set_cluster_package_config(client, cluster_id):
         package_config.setdefault(
                  'ha_proxy', {}
             )['vip'] = flags.OPTIONS.cluster_vip
-        
+
     status, resp = client.update_cluster_config(
         cluster_id, package_config=package_config)
     logging.info(

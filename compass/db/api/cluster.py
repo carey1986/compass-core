@@ -188,8 +188,8 @@ def is_cluster_os_ready(
 ):
     cluster = utils.get_db_object(
         session, models.Cluster, exception_when_missing, id=cluster_id)
-   
-    all_states = ([i.host.state.ready for i in cluster.clusterhosts]) 
+
+    all_states = ([i.host.state.ready for i in cluster.clusterhosts])
 
     logging.info("is_cluster_os_ready: all_states %s" % all_states)
 
@@ -415,7 +415,7 @@ def get_cluster_metadata(cluster_id, user=None, session=None, **kwargs):
         )
 
     metadatas['package_config'] = metadata_api.get_flavor_metadata_internal(
-        session, cluster.flavor_id   
+        session, cluster.flavor_id 
     )
     return metadatas
 
