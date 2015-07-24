@@ -17,75 +17,177 @@ __author__ = "Grace Yu (grace.yu@huawei.com)"
 
 """Module to manage and access cluster, hosts and adapter config.
 """
+from collections import defaultdict
 from copy import deepcopy
 import logging
 
 
 from compass.deployment.utils import constants as const
 
+class AdapterInfo(object):
+    def __init__(self, adapter_info):
+        self.adapter_info = adapter_info
+
+class ClusterInfo(object):
+    def __init__(self, cluster_info):
+        self.cluster_info = cluster_info
+        self.id = self.cluster_info.get(const.ID)
+        self.name = self.cluster_info.get(const.NAME)
+        self.os_version = self.cluster_info.get(const.OS_VERSION)
+        self.flavor = self.cluster_info.get(const.FLAVOR, {})
+        self.os_config = self.cluster_info.get(const.OS_CONFIG, {})
+        self.package_config = self.cluster_info.get(const.PK_CONFIG, {})
+        self.deployed_os_config = self.cluster_info.get(const.DEPLOYED_OS_CONFIG, {})
+        self.deployed_package_config = self.cluster_info.get(const.DEPLOYED_PK_CONFIG, {})
+        self.network_mapping = self.package_config.get(const.NETWORK_MAPPING, {})
+
+    @property
+    def base_info(self):
+        return { const.ID: self.id,
+                 const.NAME: self.name,
+                 const.OS_VERSION: self.os_version }
+
+class HostInfo(object):
+    def __init__(self, host_info, cluster_info):
+        self.host_info = host_info
+        self.cluster_info = cluster_info
+        self.id = self.host_info.get(const.ID)
+        self.name = self.host_info.get(const.NAME)
+        self.mac = self.host_info.get(const.MAC_ADDR)
+        self.hostname = self.host_info.get(const.HOSTNAME)
+        self.networks = self.host_info.get(const.NETWORKS, {})
+        self.os_config = self.host_info.get(const.OS_CONFIG)
+        self.package_config = self.host_info.get(const.PK_CONFIG, {})
+        self.roles = self.host_info.get(const.ROLES, [])
+        self.ipmi = deepcopy(self.host_info.get(const.IPMI, {}))
+        self.reinstall_os_flag = self.host_info.get(const.REINSTALL_OS_FLAG)
+
+        if const.DNS in host_info:
+            self.dns = host_info[const.DNS]
+        else:
+            self.dns = '.'.join((self.hostname, self.domain))
+
+        package_config = self.get_host_package_config(host_id)
+        if const.NETWORK_MAPPING not in package_config:
+            network_mapping = self.get_cluster_network_mapping()
+        else:
+            network_mapping = package_config[const.NETWORK_MAPPING]
+
+        return network_mapping
+
+    @property
+    def baseinfo(self):
+        return  { const.REINSTALL_OS_FLAG: self.reinstall_os_flag,
+                  const.MAC_ADDR: self.mac,
+                  const.NAME: self.name,
+                  const.HOSTNAME: self.hostname,
+                  const.NETWORKS: deepcopy(self.networks) }
 
 class BaseConfigManager(object):
+    def __init__(self, adapter_info={}, cluster_info={}, hosts_info={}):
+        assert(adapter_info and isinstance(adapter_info, dict))
+        assert(cluster_info and isinstance(adapter_info, dict))
+        assert(hosts_info and isinstance(adapter_info, dict))
 
-    def __init__(self, adapter_info, cluster_info, hosts_info):
-        self.adapter_info = adapter_info
-        self.cluster_info = cluster_info
-        self.hosts_info = hosts_info
+        self.adapter_info = AdapterInfo(adapter_info)
+        self.cluster_info = ClusterInfo(cluster_info)
+        self.hosts_info = [(k, HostInfo(v, self.cluster_info)) for k, v in hosts_info.iteritems()]
 
+    #*************************** cluster method start ****************************
     def get_cluster_id(self):
-        return self.__get_cluster_item(const.ID)
+        return self.cluster_info.id
 
     def get_clustername(self):
-        return self.__get_cluster_item(const.NAME)
+        return self.cluster_info.name
 
     def get_os_version(self):
-        return self.__get_cluster_item(const.OS_VERSION)
+        return self.cluster_info.os_version
+
+    def get_cluster_os_config(self):
+        return self.cluster_info.os_config
 
     def get_cluster_baseinfo(self):
-        """Get cluster base information.
+        return self.cluster_info.base_info
 
-        Including cluster_id, os_version and cluster_name.
+    def get_cluster_flavor_name(self):
+        return self.cluster_info.flavor.get(const.FLAVOR_NAME)
+
+    def get_cluster_flavor_roles(self):
+        return self.cluster_info.flavor.get(const.ROLES, [])
+
+    def get_cluster_flavor_template(self):
+        return self.cluster_info.flavor.get(const.TMPL)
+
+    def get_cluster_package_config(self):
+        return self.cluster_info.package_config
+
+    def get_cluster_network_mapping(self):
+        mapping = self.cluster_info.network_mapping
+        logging.info("Network mapping in the config is '%s'!", mapping)
+        return mapping
+
+    def get_cluster_deployed_os_config(self):
+        return self.cluster_info.deployed_os_config
+
+    def get_cluster_deployed_package_config(self):
+        return self.cluster_info.deployed_package_config
+
+    def get_cluster_roles_mapping(self):
+        deploy_config = self.cluster_info.deployed_package_config
+        mapping = deploy_config.get(const.ROLES_MAPPING)
+        if not mapping:
+            mapping = self._get_cluster_roles_mapping()
+
+            # cache mapping info
+            deploy_config[const.ROLES_MAPPING] = mapping
+
+        return mapping
+
+    def _get_cluster_roles_mapping(self):
+        """The ouput format will be as below, for example:
+
+        {
+            "controller": [{
+                "hostname": "xxx",
+                "management": {
+                    "interface": "eth0",
+                    "ip": "192.168.1.10",
+                    "netmask": "255.255.255.0",
+                    "subnet": "192.168.1.0/24",
+                    "is_mgmt": True,
+                    "is_promiscuous": False
+                },
+                ...
+            }],
+                ...
+        }
         """
-        attr_names = [const.ID, const.NAME, const.OS_VERSION]
+        mapping = defaultdict(list)
+        for host_id in self.hosts_info.keys():
+            roles_mapping = self.get_host_roles_mapping(host_id)
+            for role, value in roles_mapping.items():
+                mapping[role].append(value)
 
-        base_info = {}
-        for name in attr_names:
-            base_info[name] = self.__get_cluster_item(name)
+        return mapping
 
-        return base_info
+    #*************************** cluster method end ****************************
+
+    #*************************** host method start ****************************
+    def validate_host(self, host_id):
+        if host_id not in self.hosts_info:
+            raise RuntimeError("host_id %s is invalid" % host_id)
+
+    def validate_nic(self, host_id, interface):
+        self.validate_host(host_id)
+        if interface not in self.hosts_info[host_id]:
+            raise RuntimeError("host %s's interface %s is invalid name" % (host_id, interface))
 
     def get_host_id_list(self):
-        if not self.hosts_info:
-            logging.info("hosts config is None or {}")
-            return []
-
         return self.hosts_info.keys()
 
     def get_hosts_id_list_for_os_installation(self):
         """Get info of hosts which need to install/reinstall OS."""
-        result = []
-        all_host_ids = self.get_host_id_list()
-        for host_id in all_host_ids:
-            if self.hosts_info[host_id][const.REINSTALL_OS_FLAG]:
-                result.append(host_id)
-        return result
-
-    def get_cluster_flavor_info(self):
-        return self.__get_cluster_item(const.FLAVOR, {})
-
-    def get_cluster_flavor_name(self):
-        flavor_info = self.get_cluster_flavor_info()
-        return flavor_info.setdefault(const.FLAVOR_NAME, None)
-
-    def get_cluster_flavor_roles(self):
-        flavor_info = self.get_cluster_flavor_info()
-        return flavor_info.setdefault(const.ROLES, [])
-
-    def get_cluster_flavor_template(self):
-        flavor_info = self.get_cluster_flavor_info()
-        return flavor_info.setdefault(const.TMPL, None)
-
-    def get_cluster_os_config(self):
-        return deepcopy(self.__get_cluster_item(const.OS_CONFIG, {}))
+        return [id for id, info in self.hosts_info if info.reinstall_os_flag]
 
     def get_server_credentials(self):
         cluster_os_config = self.get_cluster_os_config()
@@ -97,145 +199,61 @@ class BaseConfigManager(object):
         password = cluster_os_config[const.SERVER_CREDS][const.PASSWORD]
         return (username, password)
 
-    def get_cluster_package_config(self):
-        return deepcopy(self.__get_cluster_item(const.PK_CONFIG, {}))
-
-    def get_cluster_network_mapping(self):
-        package_config = self.get_cluster_package_config()
-        if not package_config:
-            logging.info("cluster package_config is None or {}.")
-            return {}
-
-        mapping = package_config.setdefault(const.NETWORK_MAPPING, {})
-        logging.info("Network mapping in the config is '%s'!", mapping)
-
-        return mapping
-
-    def get_cluster_deployed_os_config(self):
-        return deepcopy(self.__get_cluster_item(const.DEPLOYED_OS_CONFIG, {}))
-
-    def get_cluster_deployed_package_config(self):
-        return deepcopy(self.__get_cluster_item(const.DEPLOYED_PK_CONFIG, {}))
-
-    def __get_cluster_item(self, item, default_value=None):
-        if not self.cluster_info:
-            logging.info("cluster config is None or {}")
-            return None
-
-        return self.cluster_info.setdefault(item, default_value)
-
-    def get_cluster_roles_mapping(self):
-        if not self.cluster_info:
-            logging.info("cluster config is None or {}")
-            return {}
-
-        deploy_config = self.get_cluster_deployed_package_config()
-        mapping = deploy_config.setdefault(const.ROLES_MAPPING, {})
-
-        if not mapping:
-            mapping = self._get_cluster_roles_mapping_helper()
-            deploy_config[const.ROLES_MAPPING] = mapping
-
-        return mapping
-
     def _get_host_info(self, host_id):
-        if not self.hosts_info:
-            logging.info("hosts config is None or {}")
-            return {}
-
-        if host_id not in self.hosts_info:
-            logging.info("Cannot find host, ID is '%s'", host_id)
-            return {}
-
-        return self.hosts_info[host_id]
-
-    def __get_host_item(self, host_id, item, default_value=None):
-        host_info = self._get_host_info(host_id)
-        if not host_info:
-            return {}
-
-        return deepcopy(host_info.setdefault(item, default_value))
+        self.validate_host(host_id)
+        return self.hosts_info.get(host_id)
 
     def get_host_baseinfo(self, host_id):
-        """Get host base information."""
-        host_info = self._get_host_info(host_id)
-        if not host_info:
-            return {}
-
-        attr_names = [const.REINSTALL_OS_FLAG, const.MAC_ADDR, const.NAME,
-                      const.HOSTNAME, const.NETWORKS]
-        base_info = {}
-        for attr in attr_names:
-            temp = host_info[attr]
-            if isinstance(temp, dict) or isinstance(temp, list):
-                base_info[attr] = deepcopy(temp)
-            else:
-                base_info[attr] = temp
-
-        base_info[const.DNS] = self.get_host_dns(host_id)
-
-        return base_info
+        self.validate_host(host_id)
+        host_info = self.hosts_info[host_id]
+        return host_info.baseinfo
 
     def get_host_fullname(self, host_id):
-        return self.__get_host_item(host_id, const.NAME, None)
+        self.validate_host(host_id)
+        return self.hosts_info[host_id].name
 
     def get_host_dns(self, host_id):
-        host_info = self._get_host_info(host_id)
-        if not host_info:
-            return None
-
-        if const.DNS not in host_info:
-            hostname = host_info[const.HOSTNAME]
-            domain = self.get_host_domain(host_id)
-            host_info[const.DNS] = '.'.join((hostname, domain))
-
-        return host_info[const.DNS]
+        self.validate_host(host_id)
+        return self.hosts_info[host_id].dns
 
     def get_host_mac_address(self, host_id):
-        return self.__get_host_item(host_id, const.MAC_ADDR, None)
+        self.validate_host(host_id)
+        return self.hosts_info[host_id].mac
 
     def get_hostname(self, host_id):
-        return self.__get_host_item(host_id, const.HOSTNAME, None)
+        self.validate_host(host_id)
+        return self.hosts_info[host_id].hostname
 
     def get_host_networks(self, host_id):
-        return self.__get_host_item(host_id, const.NETWORKS, {})
+        self.validate_host(host_id)
+        return self.hosts_info[host_id].networks
 
     def get_host_interfaces(self, host_id):
-        networks = self.get_host_networks(host_id)
-        return networks.keys()
+        # get interface names
+        return self.get_host_networks(host_id).keys()
 
     def get_host_interface_config(self, host_id, interface):
-        networks = self.get_host_networks(host_id)
-        return networks.setdefault(interface, {})
+        self.validate_nic(host_id, interface)
+        return self.get_host_networks(host_id).get(interface, {})
 
     def get_host_interface_ip(self, host_id, interface):
-        interface_config = self._get_host_interface_config(host_id, interface)
-        return interface_config.setdefault(const.IP_ADDR, None)
+        return self.get_host_interface_config(host_id, interface).get(const.IP_ADDR)
 
     def get_host_interface_netmask(self, host_id, interface):
-        interface_config = self.get_host_interface_config(host_id, interface)
-        return interface_config.setdefault(const.NETMASK, None)
+        return self.get_host_interface_config(host_id, interface).get(const.NETMASK)
 
     def get_host_interface_subnet(self, host_id, interface):
-        nic_config = self.get_host_interface_config(host_id, interface)
-        return nic_config.setdefault(const.SUBNET, None)
+        return self.get_host_interface_config(host_id, interface).get(const.SUBNET)
 
     def is_interface_promiscuous(self, host_id, interface):
-        nic_config = self.get_host_interface_config(host_id, interface)
-        if not nic_config:
-            raise Exception("Cannot find interface '%s'", interface)
-
-        return nic_config[const.PROMISCUOUS_FLAG]
+        return self.get_host_interface_config(host_id, interface).get(const.PROMISCUOUS_FLAG)
 
     def is_interface_mgmt(self, host_id, interface):
-        nic_config = self.get_host_interface_config(host_id, interface)
-        if not nic_config:
-            raise Exception("Cannot find interface '%s'", interface)
-
-        return nic_config[const.MGMT_NIC_FLAG]
+        return self.get_host_interface_config(host_id, interface).get(const.MGMT_NIC_FLAG)
 
     def get_host_os_config(self, host_id):
-        return self.__get_host_item(host_id, const.OS_CONFIG, {})
+        self.validate_host(host_id)
+        return self.hosts_info[host_id].os_config
 
     def get_host_domain(self, host_id):
         os_config = self.get_host_os_config(host_id)
@@ -284,11 +302,10 @@ class BaseConfigManager(object):
         return roles
 
     def get_host_roles_mapping(self, host_id):
-        roles_mapping = {}
         deployed_pk_config = self.get_host_package_config(host_id)
 
         if const.ROLES_MAPPING not in deployed_pk_config:
-            roles_mapping = self._get_host_roles_mapping_helper(host_id)
+            roles_mapping = self._get_host_roles_mapping(host_id)
             deployed_pk_config[const.ROLES_MAPPING] = roles_mapping
         else:
             roles_mapping = deployed_pk_config[const.ROLES_MAPPING]
@@ -306,13 +323,6 @@ class BaseConfigManager(object):
         ipmi_pass = ipmi_info[const.IPMI_CREDS][const.PASSWORD]
 
         return (ipmi_ip, ipmi_user, ipmi_pass)
-
-    def __get_adapter_item(self, item, default_value=None):
-        if not self.adapter_info:
-            logging.info("Adapter Info is None!")
-            return None
-
-        return deepcopy(self.adapter_info.setdefault(item, default_value))
 
     def get_adapter_name(self):
         return self.__get_adapter_item(const.NAME, None)
@@ -350,38 +360,7 @@ class BaseConfigManager(object):
 
         return None
 
-    def _get_cluster_roles_mapping_helper(self):
-        """The ouput format will be as below, for example:
-
-        {
-            "controller": [{
-                "hostname": "xxx",
-                "management": {
-                    "interface": "eth0",
-                    "ip": "192.168.1.10",
-                    "netmask": "255.255.255.0",
-                    "subnet": "192.168.1.0/24",
-                    "is_mgmt": True,
-                    "is_promiscuous": False
-                },
-                ...
-            }],
-                ...
-        }
-        """
-        mapping = {}
-        hosts_id_list = self.get_host_id_list()
-        network_mapping = self.get_cluster_network_mapping()
-        if not network_mapping:
-            return {}
-
-        for host_id in hosts_id_list:
-            roles_mapping = self.get_host_roles_mapping(host_id)
-            for role, value in roles_mapping.items():
-                mapping.setdefault(role, []).append(value)
-        return mapping
-
-    def _get_host_roles_mapping_helper(self, host_id):
+    def _get_host_roles_mapping(self, host_id):
         """The format will be the same as cluster roles mapping."""
         network_mapping = self.get_host_network_mapping(host_id)
         if not network_mapping:
@@ -392,14 +371,15 @@ class BaseConfigManager(object):
         interfaces = self.get_host_interfaces(host_id)
 
         mapping = {}
-        temp = {const.HOSTNAME: hostname}
-        for key in network_mapping:
-            nic = network_mapping[key][const.NIC]
+        net_info = {const.HOSTNAME: hostname}
+        for k, v in network_mapping:
+            nic = v[const.NIC]
             if nic in interfaces:
-                temp[key] = self.get_host_interface_config(host_id, nic)
-                temp[key][const.NIC] = nic
+                net_info[k] = self.get_host_interface_config(host_id, nic)
+                net_info[k][const.NIC] = nic
 
         for role in roles:
             role = role.replace("-", "_")
-            mapping[role] = temp
+            mapping[role] = net_info
+
         return mapping
